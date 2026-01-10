@@ -130,9 +130,16 @@ func (c *child) stop(grace time.Duration) {
         _ = c.cmd.Process.Kill()
         _ = c.cmd.Wait()
     }
-    // Clean up FIFOs
-    for _, fifo := range c.fifos {
-        _ = os.Remove(fifo)
+    // Clean up FIFOs and directories
+    for _, path := range c.fifos {
+        info, err := os.Stat(path)
+        if err == nil {
+            if info.IsDir() {
+                _ = os.RemoveAll(path)
+            } else {
+                _ = os.Remove(path)
+            }
+        }
     }
 }
 
@@ -183,12 +190,21 @@ func startLocalWrappers(cfg *Config) ([]*child, error) {
         logf("No udp_forwards configured; skipping local UDP wrappers.")
         return nil, nil
     }
-    var kids []*child
     
     // Create secure temporary directory for FIFOs
     tmpDir, err := os.MkdirTemp("", "ssh-socat-tunnel-*")
     if err != nil {
         return nil, fmt.Errorf("failed to create temp directory: %w", err)
+    }
+    
+    var kids []*child
+    
+    // Cleanup helper for error cases
+    cleanup := func() {
+        for _, k := range kids {
+            k.stop(1 * time.Second)
+        }
+        _ = os.RemoveAll(tmpDir)
     }
     
     for _, u := range cfg.UDPForwards {
@@ -197,6 +213,7 @@ func startLocalWrappers(cfg *Config) ([]*child, error) {
         
         // Create FIFO
         if err := createFIFO(fifoPath); err != nil {
+            cleanup()
             return nil, fmt.Errorf("failed to create FIFO %s: %w", fifoPath, err)
         }
         
@@ -213,14 +230,14 @@ func startLocalWrappers(cfg *Config) ([]*child, error) {
         cmdTCP := exec.Command("socat", argsTCP...)
         fTCP, err := os.OpenFile(llogTCP, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
         if err != nil {
-            _ = os.Remove(fifoPath)
+            cleanup()
             return nil, err
         }
         cmdTCP.Stdout = fTCP
         cmdTCP.Stderr = fTCP
         if err := cmdTCP.Start(); err != nil {
             _ = fTCP.Close()
-            _ = os.Remove(fifoPath)
+            cleanup()
             return nil, err
         }
         
@@ -236,7 +253,7 @@ func startLocalWrappers(cfg *Config) ([]*child, error) {
             tcpChild := &child{cmd: cmdTCP, tag: "cleanup"}
             tcpChild.stop(1 * time.Second)
             _ = fTCP.Close()
-            _ = os.Remove(fifoPath)
+            cleanup()
             return nil, err
         }
         cmdUDP.Stdout = fUDP
@@ -246,7 +263,7 @@ func startLocalWrappers(cfg *Config) ([]*child, error) {
             tcpChild.stop(1 * time.Second)
             _ = fTCP.Close()
             _ = fUDP.Close()
-            _ = os.Remove(fifoPath)
+            cleanup()
             return nil, err
         }
         
@@ -264,6 +281,12 @@ func startLocalWrappers(cfg *Config) ([]*child, error) {
         logf("Local FIFO wrapper pid=%d/%d : TCP 127.0.0.1:%d <-> PIPE <-> UDP %s:%d (VPS UDP %d)",
             cmdTCP.Process.Pid, cmdUDP.Process.Pid, u.WrapTCPPort, u.LocalHost, u.LocalUDPPort, u.UDPPublicPort)
     }
+    
+    // Store tmpDir for cleanup on shutdown - add to first child
+    if len(kids) > 0 {
+        kids[0].fifos = append(kids[0].fifos, tmpDir)
+    }
+    
     return kids, nil
 }
 
