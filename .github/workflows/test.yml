@@ -38,7 +38,11 @@ jobs:
           chmod 600 ~/.ssh/authorized_keys
           chmod 700 ~/.ssh
           
-          # Configure SSH server
+          # Stop the socket-activated SSH service to prevent port conflicts
+          sudo systemctl stop ssh.socket || true
+          sudo systemctl stop ssh || true
+          
+          # Configure SSH server for port 2222
           sudo tee /etc/ssh/sshd_config.d/test.conf > /dev/null <<EOF
           Port 2222
           PermitRootLogin no
@@ -46,14 +50,24 @@ jobs:
           PasswordAuthentication no
           GatewayPorts no
           AllowTcpForwarding yes
+          ListenAddress 0.0.0.0
           EOF
           
-          # Restart SSH server to pick up new configuration
-          sudo systemctl restart ssh
-          sudo systemctl status ssh --no-pager || true
+          # Start SSH server directly (not through systemd to avoid socket conflicts)
+          sudo /usr/sbin/sshd -f /etc/ssh/sshd_config
           
-          # Wait for SSH to be ready
+          # Wait for SSH to be ready and verify it's on port 2222
           sleep 2
+          
+          # Check if SSH is listening on port 2222
+          if ! ss -tlnp | grep ':2222'; then
+            echo "ERROR: SSH server is not listening on port 2222"
+            echo "Current listening ports:"
+            ss -tlnp | grep sshd || true
+            exit 1
+          fi
+          
+          echo "SSH server is listening on port 2222"
           
           # Test SSH connection
           ssh -i ~/.ssh/test_key -p 2222 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null $USER@localhost echo "SSH test successful"
@@ -331,6 +345,11 @@ jobs:
           # Kill any remaining socat processes started by this workflow
           pgrep -f "socat.*ssh-socat-tunnel-" 2>/dev/null | while read pid; do
             [ -n "$pid" ] && sudo kill -9 "$pid" 2>/dev/null || true
+          done
+          
+          # Kill the SSH server we started on port 2222
+          pgrep -f "sshd.*2222" 2>/dev/null | while read pid; do
+            [ -n "$pid" ] && sudo kill "$pid" 2>/dev/null || true
           done
           
           # Clean up temp files
