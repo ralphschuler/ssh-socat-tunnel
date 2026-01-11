@@ -42,6 +42,10 @@ jobs:
           sudo systemctl stop ssh.socket || true
           sudo systemctl stop ssh || true
           
+          # Create privilege separation directory required by sshd
+          sudo mkdir -p /run/sshd
+          sudo chmod 0755 /run/sshd
+          
           # Configure SSH server for port 2222
           sudo tee /etc/ssh/sshd_config.d/test.conf > /dev/null <<EOF
           Port 2222
