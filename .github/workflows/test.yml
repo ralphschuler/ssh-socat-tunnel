@@ -48,8 +48,8 @@ jobs:
           AllowTcpForwarding yes
           EOF
           
-          # Start SSH server
-          sudo systemctl start ssh
+          # Restart SSH server to pick up new configuration
+          sudo systemctl restart ssh
           sudo systemctl status ssh --no-pager || true
           
           # Wait for SSH to be ready
